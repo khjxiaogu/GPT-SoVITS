@@ -193,3 +193,5 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+/kh_models
+/tools/asr/models

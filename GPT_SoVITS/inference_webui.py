@@ -19,7 +19,6 @@ def set_high_priority():
         print("已将进程优先级设为 High")
     except psutil.AccessDenied:
         print("权限不足，无法修改优先级（请用管理员运行）")
-set_high_priority()
 import json
 import logging
 import os
@@ -54,22 +53,24 @@ path_sovits_v4 = pretrained_sovits_name["v4"]
 is_exist_s2gv3 = os.path.exists(path_sovits_v3)
 is_exist_s2gv4 = os.path.exists(path_sovits_v4)
 
-if os.path.exists("./weight.json"):
-    pass
-else:
-    with open("./weight.json", "w", encoding="utf-8") as file:
-        json.dump({"GPT": {}, "SoVITS": {}}, file)
+# if os.path.exists("./weight.json"):
+    # pass
+# else:
+    # with open("./weight.json", "w", encoding="utf-8") as file:
+        # json.dump({"GPT": {}, "SoVITS": {}}, file)
 
-with open("./weight.json", "r", encoding="utf-8") as file:
-    weight_data = file.read()
-    weight_data = json.loads(weight_data)
-    gpt_path = os.environ.get("gpt_path", weight_data.get("GPT", {}).get(version, GPT_names[-1]))
-    sovits_path = os.environ.get("sovits_path", weight_data.get("SoVITS", {}).get(version, SoVITS_names[0]))
-    if isinstance(gpt_path, list):
-        gpt_path = gpt_path[0]
-    if isinstance(sovits_path, list):
-        sovits_path = sovits_path[0]
+# with open("./weight.json", "r", encoding="utf-8") as file:
+    # weight_data = file.read()
+    # weight_data = json.loads(weight_data)
+    # gpt_path = os.environ.get("gpt_path", "C:\\GPTSOVITS\\GPT-SoVITS\\GPT_weights_v2ProPlus\\haiyin1-e15.ckpt")
+    # sovits_path = os.environ.get("sovits_path", "C:\\GPTSOVITS\\GPT-SoVITS\\SoVITS_weights_v2ProPlus\\haiyin1_e8_s136.pth")
 
+gpt_path = os.environ.get("gpt_path")
+sovits_path = os.environ.get("sovits_path")
+if isinstance(gpt_path, list):
+     gpt_path = gpt_path[0]
+if isinstance(sovits_path, list):
+     sovits_path = sovits_path[0]
 # print(2333333)
 # print(os.environ["gpt_path"])
 # print(gpt_path)
@@ -85,6 +86,7 @@ infer_ttswebui = os.environ.get("infer_ttswebui", 9872)
 infer_ttswebui = int(infer_ttswebui)
 is_share = os.environ.get("is_share", "False")
 is_share = eval(is_share)
+hps=""
 if "_CUDA_VISIBLE_DEVICES" in os.environ:
     os.environ["CUDA_VISIBLE_DEVICES"] = os.environ["_CUDA_VISIBLE_DEVICES"]
 is_half = eval(os.environ.get("is_half", "True")) and torch.cuda.is_available()
@@ -367,10 +369,7 @@ def change_sovits_weights(sovits_path, prompt_language=None, text_language=None)
         f.write(json.dumps(data))
 
 
-try:
-    next(change_sovits_weights(sovits_path))
-except:
-    pass
+
 
 
 def change_gpt_weights(gpt_path):
@@ -397,7 +396,7 @@ def change_gpt_weights(gpt_path):
         f.write(json.dumps(data))
 
 
-change_gpt_weights(gpt_path)
+
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 import torch
 
@@ -1344,6 +1343,11 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
         # gr.Markdown(html_center(i18n("后续将支持转音素、手工修改音素、语音合成分步执行。")))
 
 if __name__ == "__main__":
+    try:
+        next(change_sovits_weights(sovits_path))
+    except:
+        pass
+    change_gpt_weights(gpt_path)
     app.queue().launch(  # concurrency_count=511, max_size=1022
         server_name="0.0.0.0",
         inbrowser=True,
