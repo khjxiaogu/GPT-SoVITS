@@ -5,6 +5,7 @@ import json
 import os
 import traceback
 import requests
+import numpy as np
 import inference_webui as inf
 import mediaout
 sovits = ""
@@ -17,6 +18,60 @@ message_queue = asyncio.Queue()
 sovits = ""
 gpt = ""
 
+# 内置 ASR（FunASR）模型，懒加载；加载失败只跳过字数校验，不影响正常生成
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+_ASR_MODEL_DIR = os.path.join(_PROJECT_ROOT, "tools", "asr", "models")
+_ASR_DEVICE = os.environ.get("LOCALEMP_ASR_DEVICE", "cpu")
+_asr_model = None
+_asr_failed = False
+
+
+def get_asr_model():
+    """加载项目内置的 FunASR 中文模型，失败返回 None。"""
+    global _asr_model, _asr_failed
+    if _asr_model is not None:
+        return _asr_model
+    if _asr_failed:
+        return None
+
+    try:
+        from funasr import AutoModel
+
+        _asr_model = AutoModel(
+            model=os.path.join(
+                _ASR_MODEL_DIR,
+                "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+            ),
+            vad_model=os.path.join(
+                _ASR_MODEL_DIR, "speech_fsmn_vad_zh-cn-16k-common-pytorch"
+            ),
+            punc_model=os.path.join(
+                _ASR_MODEL_DIR, "punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
+            ),
+            device=_ASR_DEVICE,
+        )
+        print(f"ASR 模型加载完成（device={_ASR_DEVICE}）")
+    except Exception as e:
+        _asr_failed = True
+        print(f"ASR 模型加载失败，跳过字数校验: {e}")
+        traceback.print_exc()
+
+    return _asr_model
+
+
+def recognize_audio(segment):
+    """识别一段音频的文本，供 mediaout 的字数校验使用。"""
+    model = get_asr_model()
+    if model is None:
+        return None
+
+    audio = segment.set_frame_rate(16000).set_channels(1)
+    samples = np.asarray(audio.get_array_of_samples(), dtype=np.float32) / 32768.0
+    result = model.generate(input=samples)
+    if not result:
+        return ""
+    return result[0].get("text", "")
+
 def process_data(data):
     """
     处理语音生成请求，返回 MP3 字节数据。
@@ -27,7 +82,7 @@ def process_data(data):
     reqid = data.get("reqid")
     content = data.get("content")
     if not chara or not content or not isinstance(content, list):
-        print("{reqid}:请求缺少必要字段 (chara/content)，或 content 不是数组")
+        print(f"{reqid}:请求缺少必要字段 (chara/content)，或 content 不是数组")
         return None
 
     base_dir = os.path.join("kh_models", chara)
@@ -58,7 +113,10 @@ def process_data(data):
         traceback.print_exc()
         # 可根据需要决定是否继续处理
 
-    audio_segments = []
+    # ASR 用于每句生成后核对字数；模型加载失败则跳过校验，正常生成
+    recognize_fn = recognize_audio if get_asr_model() is not None else None
+
+    generated = []  # [(synthesize, [AudioPiece, ...]), ...]，按内容段顺序保存
     for idx, item in enumerate(content):
         emotion = item.get("emotion")
         text = item.get("text")
@@ -71,28 +129,43 @@ def process_data(data):
             print(f"{reqid}:参考音频不存在: {emote_path}，跳过该项")
             continue
 
-        try:
-            print(f"{reqid}:生成语音片段 [{idx}]: emotion={emotion}, text={text}")
+        def synthesize(sentence, _emote_path=emote_path):
+            """单句合成：关闭 TTS 内部切句，切句与空白处理统一交给 mediaout。"""
             tts_gen = inf.get_tts_wav(
                 top_k=30,
-                ref_wav_path=emote_path,
+                ref_wav_path=_emote_path,
                 prompt_text=None,
                 prompt_language="中文",
                 text_language="中文",
-                text=text,
-                how_to_cut="按中文句号。切"
+                text=sentence,
+                how_to_cut="不切"
             )
-            audio_tuple = next(tts_gen)
-            seg = mediaout.numpy_to_audiosegment(audio_tuple)
-            audio_segments.append(seg)
+            return next(tts_gen)
+
+        try:
+            print(f"{reqid}:生成语音片段 [{idx}]: emotion={emotion}, text={text}")
+            pieces = mediaout.generate_audio_segments(text, synthesize, recognize_fn)
+            if pieces:
+                generated.append((synthesize, pieces))
         except Exception as e:
             print(f"{reqid}:第 {idx} 项生成失败: {e}")
             traceback.print_exc()
 
-    if not audio_segments:
-        print("{reqid}:没有成功生成任何音频片段")
+    if not generated:
+        print(f"{reqid}:没有成功生成任何音频片段")
         return None
 
+    # 把所有内容段的音频响度统一拉到平均响度
+    all_pieces = [piece for _, pieces in generated for piece in pieces]
+    mediaout.normalize_loudness(all_pieces)
+
+    # 同一段内容内部的多句用 300ms 间隔；不同内容段之间用 500ms
+    audio_segments = [
+        mediaout.concat_with_silence(
+            [piece.segment for piece in pieces], silence_ms=300
+        )
+        for _, pieces in generated
+    ]
     combined = mediaout.concat_with_silence(audio_segments, silence_ms=500)
     mp3_bytes = mediaout.export_as_mp3_bytes(combined)
 
@@ -139,7 +212,7 @@ async def websocket_listener(config):
         try:
             print(f"[{url}] 正在连接...")
             async with websockets.connect(
-                url + "/aichat/kh$localModelDeploy",
+                url + "/aichat/kh$localModelDeploy?model_type=audio",
                 extra_headers={"authorization": f"Bearer {token}"}
             ) as websocket:
                 print(f"[{url}] 连接成功，等待消息...")
@@ -151,7 +224,7 @@ async def websocket_listener(config):
                         print(f"[{url}] 收到非 JSON 格式消息，已忽略")
                         continue
 
-                    if data.get("type") != "audiorequest":
+                    if data.get("type") != "audio":
                         continue
 
                     reqid = data.get("reqid")
