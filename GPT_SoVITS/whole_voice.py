@@ -812,10 +812,11 @@ def build_ui(*, get_tts_wav_fn, change_sovits_fn, change_gpt_fn,
                     persona_load_button = gr.Button("载入角色人设", scale=1)
 
             story = gr.Textbox(
-                label="剧情文本（需包含“待处理角色话语”标记）",
+                label="剧情文本（含前情提要时保留“待处理角色话语”标记）",
+                info="模型只提取“待处理角色话语”标记之后的内容；如果只粘贴角色台词，可以直接粘贴。",
                 lines=10,
                 max_lines=20,
-                placeholder="把包含角色台词的剧情粘贴到这里……",
+                placeholder="先粘贴前情提要，再粘贴“待处理角色话语”标记和台词……",
             )
 
             with gr.Accordion("系统提示词", open=False):
