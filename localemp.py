@@ -5,9 +5,10 @@ import json
 import os
 import traceback
 import requests
-import numpy as np
 import inference_webui as inf
 import mediaout
+from asr_utils import get_asr_model, recognize_audio
+
 sovits = ""
 gpt = ""
 
@@ -18,59 +19,6 @@ message_queue = asyncio.Queue()
 sovits = ""
 gpt = ""
 
-# 内置 ASR（FunASR）模型，懒加载；加载失败只跳过字数校验，不影响正常生成
-_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-_ASR_MODEL_DIR = os.path.join(_PROJECT_ROOT, "tools", "asr", "models")
-_ASR_DEVICE = os.environ.get("LOCALEMP_ASR_DEVICE", "cpu")
-_asr_model = None
-_asr_failed = False
-
-
-def get_asr_model():
-    """加载项目内置的 FunASR 中文模型，失败返回 None。"""
-    global _asr_model, _asr_failed
-    if _asr_model is not None:
-        return _asr_model
-    if _asr_failed:
-        return None
-
-    try:
-        from funasr import AutoModel
-
-        _asr_model = AutoModel(
-            model=os.path.join(
-                _ASR_MODEL_DIR,
-                "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-            ),
-            vad_model=os.path.join(
-                _ASR_MODEL_DIR, "speech_fsmn_vad_zh-cn-16k-common-pytorch"
-            ),
-            punc_model=os.path.join(
-                _ASR_MODEL_DIR, "punc_ct-transformer_zh-cn-common-vocab272727-pytorch"
-            ),
-            device=_ASR_DEVICE,
-        )
-        print(f"ASR 模型加载完成（device={_ASR_DEVICE}）")
-    except Exception as e:
-        _asr_failed = True
-        print(f"ASR 模型加载失败，跳过字数校验: {e}")
-        traceback.print_exc()
-
-    return _asr_model
-
-
-def recognize_audio(segment):
-    """识别一段音频的文本，供 mediaout 的字数校验使用。"""
-    model = get_asr_model()
-    if model is None:
-        return None
-
-    audio = segment.set_frame_rate(16000).set_channels(1)
-    samples = np.asarray(audio.get_array_of_samples(), dtype=np.float32) / 32768.0
-    result = model.generate(input=samples)
-    if not result:
-        return ""
-    return result[0].get("text", "")
 
 def process_data(data):
     """
